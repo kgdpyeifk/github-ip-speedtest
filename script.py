@@ -1,101 +1,114 @@
 import requests
-import time
 import subprocess
+import time
 import concurrent.futures
 
-TARGET_URL = "https://zip.cm.edu.kg/all.txt"
-KEYWORDS = ["SG", "HK", "US"]
-OUTPUT_FILE = "top10.txt"
-PING_TIMEOUT = 1
-CURL_TIMEOUT = 1
-MAX_IP_PER_REGION = 50
-THREADS = 20
+# 显示标签
+label_map = {
+    "SG": "🇸🇬SG-新加坡",
+    "HK": "🇭🇰HK-香港",
+    "US": "🇺🇸US-美国"
+}
 
-def fetch_ip_list():
-    response = requests.get(TARGET_URL)
-    response.raise_for_status()
-    lines = response.text.strip().split('\n')
-    return [line.strip() for line in lines if any(k in line for k in KEYWORDS)]
+# 下载并提取 IP
+def fetch_ips():
+    url = "https://zip.cm.edu.kg/all.txt"
+    resp = requests.get(url)
+    raw_lines = resp.text.strip().splitlines()
+    regions = {"SG": [], "HK": [], "US": []}
+    for line in raw_lines:
+        for tag in regions:
+            if f"#{tag}" in line:
+                ip_port = line.split("#")[0]
+                ip, port = ip_port.split(":")
+                regions[tag].append((ip.strip(), port.strip()))
+    return regions
 
-def extract_info(ip_line):
-    ip_port, label = ip_line.split("#")
-    ip, port = ip_port.split(":")
-    label_map = {
-        "HK": "🇭🇰HK-香港",
-        "SG": "🇸🇬SG-新加坡",
-        "US": "🇺🇸US-美国"
-    }
-    label = label_map.get(label, label)
-    return ip, port, label
-
-def ping_delay(ip):
+# 测试 Ping 延迟
+def ping_ip(ip):
     try:
-        output = subprocess.check_output(["ping", "-c", "1", "-W", str(PING_TIMEOUT), ip], stderr=subprocess.DEVNULL)
-        line = output.decode().split('\n')[-3]
-        avg_time = float(line.split("/")[4])
-        return avg_time
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", "1", ip],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        for line in result.stdout.splitlines():
+            if "time=" in line:
+                latency = float(line.split("time=")[-1].split(" ")[0])
+                return latency
     except:
-        return float('inf')
+        pass
+    return float("inf")
 
-def speed_test(ip, port):
-    try:
-        start = time.time()
-        s = subprocess.run(["curl", f"https://{ip}:{port}", "--max-time", str(CURL_TIMEOUT), "--insecure", "-o", "/dev/null"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return time.time() - start if s.returncode == 0 else float('inf')
-    except:
-        return float('inf')
-
-def threaded_test(fn, inputs):
+# 对每组 IP 进行延迟排序
+def filter_by_latency(region_ips, top_n=20):
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS) as executor:
-        future_to_ip = {executor.submit(fn, *args): args[0] for args in inputs}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_ip = {executor.submit(ping_ip, ip): (ip, port) for ip, port in region_ips}
         for future in concurrent.futures.as_completed(future_to_ip):
-            ip = future_to_ip[future]
-            try:
-                result = future.result()
-                results.append((ip, result))
-            except:
-                results.append((ip, float('inf')))
-    return results
+            ip, port = future_to_ip[future]
+            latency = future.result()
+            if latency < float("inf"):
+                results.append((ip, port, latency))
 
+    results.sort(key=lambda x: x[2])
+    return results[:top_n]
+
+# 使用 curl 测速（每个测试 1 次）
+def speed_test(ip, port):
+    test_url = f"http://{ip}:{port}"
+    try:
+        result = subprocess.run(
+            ["curl", "-m", "5", "-o", "/dev/null", "-s", "-w", "%{speed_download}", test_url],
+            capture_output=True,
+            text=True,
+            timeout=7
+        )
+        speed = float(result.stdout.strip())
+        return speed
+    except:
+        return 0.0
+
+# 对每组低延迟 IP 进行测速
+def filter_by_speed(region_ips, top_n=10):
+    results = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_ip = {executor.submit(speed_test, ip, port): (ip, port) for ip, port, _ in region_ips}
+        for future in concurrent.futures.as_completed(future_to_ip):
+            ip, port = future_to_ip[future]
+            speed = future.result()
+            if speed > 0:
+                results.append((ip, port, speed))
+
+    results.sort(key=lambda x: x[2], reverse=True)
+    return results[:top_n]
+
+# 主流程
 def main():
-    ip_lines = fetch_ip_list()
-    categorized = {k: [] for k in KEYWORDS}
-
-    for line in ip_lines:
-        for key in KEYWORDS:
-            if key in line:
-                categorized[key].append(line)
-                break
+    print("正在获取 IP 列表...")
+    region_data = fetch_ips()
 
     final_results = []
 
-    for key in KEYWORDS:
-        selected = categorized[key][:MAX_IP_PER_REGION]
-        ip_infos = [extract_info(line) for line in selected]
-        ping_results = threaded_test(lambda ip, *_: ping_delay(ip), [(ip, port) for ip, port, _ in ip_infos])
-        ip_latency_map = {ip: latency for ip, latency in ping_results}
+    for region in ["SG", "HK", "US"]:
+        print(f"开始处理 {region} ...")
+        ip_list = region_data[region]
+        top_latency = filter_by_latency(ip_list, top_n=20)
+        top_speed = filter_by_speed(top_latency, top_n=10)
 
-        top20_lines = sorted(
-            selected,
-            key=lambda line: ip_latency_map.get(extract_info(line)[0], float('inf'))
-        )[:20]
+        for ip, port, _ in top_speed:
+            label = label_map.get(region, region)
+            final_results.append(f"{ip}:{port}#{label}")
 
-        top20_infos = [extract_info(line) for line in top20_lines]
-        speed_results = threaded_test(lambda ip, port: speed_test(ip, port), [(ip, port) for ip, port, _ in top20_infos])
-        ip_speed_map = {ip: speed for ip, speed in speed_results}
-
-        top10_lines = sorted(
-            top20_lines,
-            key=lambda line: ip_speed_map.get(extract_info(line)[0], float('inf'))
-        )[:10]
-
-        final_results.extend(top10_lines)
-
-    with open(OUTPUT_FILE, "w") as f:
+    # 写入文件
+    with open("top10.txt", "w") as f:
         for line in final_results:
             f.write(line + "\n")
+
+    print("处理完成，已生成 top10.txt")
 
 if __name__ == "__main__":
     main()
