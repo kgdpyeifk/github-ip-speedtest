@@ -1,35 +1,40 @@
-name: Daily IP Speed Test
+name: IP测速任务
 
 on:
-  schedule:
-    - cron: '0 0 * * *'  # 每24小时执行一次（UTC 0点）
   workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小时自动执行一次，可根据需要修改频率
 
 jobs:
-  run-ip-speed-test:
+  run-script:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - name: 克隆仓库
+        uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Install Dependencies
+      - name: 安装 Python 依赖
         run: |
+          python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run IP Filter and Speed Test Script
+      - name: 安装 curl 工具（如已安装会自动跳过）
         run: |
-          python script.py
+          sudo apt-get update
+          sudo apt-get install -y curl
 
-      - name: Commit and Push Results
+      - name: 运行测速脚本
+        run: python main.py
+
+      - name: 提交 top10.txt 到仓库
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config user.name github-actions
+          git config user.email github-actions@github.com
           git add top10.txt
-          git commit -m "Update top10 IP list"
+          git commit -m "更新 top10.txt ($(date '+%Y-%m-%d %H:%M:%S'))" || echo "无变更，无需提交"
           git push
