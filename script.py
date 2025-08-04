@@ -1,11 +1,15 @@
 import requests
 import time
 import subprocess
-from statistics import mean
+import concurrent.futures
 
 TARGET_URL = "https://zip.cm.edu.kg/all.txt"
 KEYWORDS = ["SG", "HK", "US"]
 OUTPUT_FILE = "top10.txt"
+PING_TIMEOUT = 1
+CURL_TIMEOUT = 1
+MAX_IP_PER_REGION = 50
+THREADS = 20
 
 def fetch_ip_list():
     response = requests.get(TARGET_URL)
@@ -20,7 +24,7 @@ def extract_info(ip_line):
 
 def ping_delay(ip):
     try:
-        output = subprocess.check_output(["ping", "-c", "3", "-q", ip], stderr=subprocess.DEVNULL)
+        output = subprocess.check_output(["ping", "-c", "1", "-W", str(PING_TIMEOUT), ip], stderr=subprocess.DEVNULL)
         line = output.decode().split('\n')[-3]
         avg_time = float(line.split("/")[4])
         return avg_time
@@ -30,10 +34,24 @@ def ping_delay(ip):
 def speed_test(ip, port):
     try:
         start = time.time()
-        s = subprocess.run(["curl", f"https://{ip}:{port}", "--max-time", "3", "--insecure", "-o", "/dev/null"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        s = subprocess.run(["curl", f"https://{ip}:{port}", "--max-time", str(CURL_TIMEOUT), "--insecure", "-o", "/dev/null"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return time.time() - start if s.returncode == 0 else float('inf')
     except:
         return float('inf')
+
+def threaded_test(fn, inputs):
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS) as executor:
+        future_to_ip = {executor.submit(fn, *args): args[0] for args in inputs}
+        for future in concurrent.futures.as_completed(future_to_ip):
+            ip = future_to_ip[future]
+            try:
+                result = future.result()
+                results.append((ip, result))
+            except:
+                results.append((ip, float('inf')))
+    return results
 
 def main():
     ip_lines = fetch_ip_list()
@@ -48,13 +66,26 @@ def main():
     final_results = []
 
     for key in KEYWORDS:
-        tested = [(line, ping_delay(extract_info(line)[0])) for line in categorized[key]]
-        top20 = sorted(tested, key=lambda x: x[1])[:20]
+        selected = categorized[key][:MAX_IP_PER_REGION]
+        ip_infos = [extract_info(line) for line in selected]
+        ping_results = threaded_test(lambda ip, *_: ping_delay(ip), [(ip, port) for ip, port, _ in ip_infos])
+        ip_latency_map = {ip: latency for ip, latency in ping_results}
 
-        speed_tested = [(line, speed_test(*extract_info(line)[:2])) for line, _ in top20]
-        top10 = sorted(speed_tested, key=lambda x: x[1])[:10]
+        top20_lines = sorted(
+            selected,
+            key=lambda line: ip_latency_map.get(extract_info(line)[0], float('inf'))
+        )[:20]
 
-        final_results.extend([line for line, _ in top10])
+        top20_infos = [extract_info(line) for line in top20_lines]
+        speed_results = threaded_test(lambda ip, port: speed_test(ip, port), [(ip, port) for ip, port, _ in top20_infos])
+        ip_speed_map = {ip: speed for ip, speed in speed_results}
+
+        top10_lines = sorted(
+            top20_lines,
+            key=lambda line: ip_speed_map.get(extract_info(line)[0], float('inf'))
+        )[:10]
+
+        final_results.extend(top10_lines)
 
     with open(OUTPUT_FILE, "w") as f:
         for line in final_results:
