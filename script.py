@@ -20,6 +20,12 @@ def fetch_ip_list():
 def extract_info(ip_line):
     ip_port, label = ip_line.split("#")
     ip, port = ip_port.split(":")
+    label_map = {
+        "HK": "🇭🇰HK-香港",
+        "SG": "🇸🇬SG-新加坡",
+        "US": "🇺🇸US-美国"
+    }
+    label = label_map.get(label, label)
     return ip, port, label
 
 def ping_delay(ip):
