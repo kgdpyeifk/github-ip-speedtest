@@ -2,7 +2,7 @@ name: Daily IP Speed Test
 
 on:
   schedule:
-    - cron: '0 11 * * *'  # 每天11点执行一次（UTC 11点）
+    - cron: '0 2 * * *'  # 每天11点执行一次（UTC 11点）
   workflow_dispatch:
 
 jobs:
